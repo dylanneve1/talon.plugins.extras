@@ -57,12 +57,37 @@ Supports all major fiat currencies: USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD, SEK,
   })),
 );
 
+server.tool(
+  "get_weather",
+  `Get current weather and forecast for a location.
+
+Examples:
+  get_weather(location="London")
+  get_weather(location="Tokyo", forecast_days=3)
+  get_weather(latitude=40.7128, longitude=-74.0060)  — New York by coordinates
+
+Provides: current conditions (temperature, humidity, wind, UV), and daily forecast up to 7 days.
+Uses Open-Meteo (free, no API key). Accepts city names (auto-geocoded) or lat/lon coordinates.`,
+  {
+    location: z.string().optional().describe("City or place name (e.g. 'Paris', 'Cape Town')"),
+    latitude: z.number().optional().describe("Latitude (use instead of location name)"),
+    longitude: z.number().optional().describe("Longitude (use instead of location name)"),
+    forecast_days: z.number().optional().describe("Number of forecast days (1-7, default: 1)"),
+  },
+  async (params) => textResult(await callBridge("get_weather", {
+    location: params.location,
+    latitude: params.latitude,
+    longitude: params.longitude,
+    forecast_days: params.forecast_days ?? 1,
+  })),
+);
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
 main().catch((err) => {
-  console.error("Currency converter MCP server failed:", err);
+  console.error("Extras MCP server failed:", err);
   process.exit(1);
 });
