@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MCP server — Currency converter tool.
+ * MCP server — Extra utility tools for Talon.
  * Communicates with the main bot process via HTTP bridge.
  */
 
@@ -33,7 +33,7 @@ function textResult(raw: unknown) {
   return { content: [{ type: "text" as const, text: r.ok ? (r.text ?? "Done.") : `Error: ${r.error ?? "unknown"}` }] };
 }
 
-const server = new McpServer({ name: "currency-converter-tools", version: "1.0.0" });
+const server = new McpServer({ name: "extras-tools", version: "1.0.0" });
 
 server.tool(
   "convert_currency",

@@ -1,8 +1,8 @@
 /**
- * Currency Converter plugin for Talon.
+ * Talon Extras plugin — extra utilities for Talon.
  *
- * Provides real-time currency conversion using ECB exchange rates
- * via the frankfurter.app API.
+ * Currently provides:
+ *   - Real-time currency conversion (ECB rates via frankfurter.app)
  */
 
 import { resolve, dirname } from "node:path";
@@ -17,8 +17,8 @@ interface ActionResult {
 }
 
 const plugin = {
-  name: "currency-converter",
-  description: "Real-time currency conversion using ECB exchange rates",
+  name: "extras",
+  description: "Extra utilities — currency conversion and more",
   version: "1.0.0",
 
   mcpServerPath: resolve(__dirname, "tools.ts"),
