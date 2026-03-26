@@ -82,32 +82,6 @@ Uses Open-Meteo (free, no API key). Accepts city names (auto-geocoded) or lat/lo
   })),
 );
 
-server.tool(
-  "get_news",
-  `Fetch news headlines from Google News RSS. Search by query or browse by topic.
-
-Examples:
-  get_news(query="Iran war")  — search for specific news
-  get_news(topic="technology")  — browse tech headlines
-  get_news(topic="world", country="IE")  — world news for Ireland
-  get_news(query="oil prices", limit=10)  — more results
-
-Topics: world, nation, business, technology, entertainment, sports, science, health.
-Countries: any 2-letter code (US, IE, PL, GB, IN, etc). Default: US.`,
-  {
-    query: z.string().optional().describe("Search query (e.g. 'AI regulation', 'Ukraine')"),
-    topic: z.string().optional().describe("Topic category: world, nation, business, technology, entertainment, sports, science, health"),
-    country: z.string().optional().describe("Country code (e.g. IE, US, PL). Default: US"),
-    limit: z.number().optional().describe("Number of articles to return (1-20, default: 5)"),
-  },
-  async (params) => textResult(await callBridge("get_news", {
-    query: params.query,
-    topic: params.topic,
-    country: params.country,
-    limit: params.limit ?? 5,
-  })),
-);
-
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
