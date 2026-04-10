@@ -1,7 +1,7 @@
 {
   "name": "talon-plugins-extras",
-  "version": "1.0.0",
-  "description": "Extra plugins for Talon — currency converter and more",
+  "version": "1.1.0",
+  "description": "Extra plugins for Talon — currency, weather, Wikipedia, and more",
   "author": "Dylan Neve",
   "license": "MIT",
   "type": "module",

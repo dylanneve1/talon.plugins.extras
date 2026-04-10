@@ -4,6 +4,7 @@
  * Currently provides:
  *   - Real-time currency conversion (ECB rates via frankfurter.app)
  *   - Weather forecasts (Open-Meteo, no API key required)
+ *   - Wikipedia search, articles, summaries, sections, and links (MediaWiki API)
  */
 
 import { resolve, dirname } from "node:path";
@@ -129,10 +130,205 @@ async function handleWeather(body: Record<string, unknown>): Promise<ActionResul
   }
 }
 
+// ── Wikipedia helpers (MediaWiki API) ─────────────────────────────────────
+
+function wikiApi(lang: string): string {
+  return `https://${lang}.wikipedia.org/w/api.php`;
+}
+
+async function wikiQuery(
+  lang: string,
+  params: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  const url = new URL(wikiApi(lang));
+  url.searchParams.set("format", "json");
+  url.searchParams.set("origin", "*");
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const resp = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000) });
+  if (!resp.ok) throw new Error(`Wikipedia API error: ${resp.status}`);
+  return resp.json() as Promise<Record<string, unknown>>;
+}
+
+async function handleSearchWikipedia(body: Record<string, unknown>): Promise<ActionResult> {
+  const query = String(body.query ?? "").trim();
+  if (!query) return { ok: false, error: "Missing query" };
+  const limit = Math.min(20, Math.max(1, Number(body.limit ?? 5)));
+  const lang = String(body.language ?? "en");
+
+  try {
+    const data = await wikiQuery(lang, {
+      action: "query",
+      list: "search",
+      srsearch: query,
+      srlimit: String(limit),
+      srprop: "snippet|size|wordcount",
+    });
+    const search = (data.query as Record<string, unknown>)?.search as Array<{
+      title: string; pageid: number; snippet: string; size: number; wordcount: number;
+    }> ?? [];
+    if (search.length === 0) return { ok: true, text: `No Wikipedia results for "${query}".` };
+
+    const results = search.map((r, i) => {
+      const snippet = r.snippet.replace(/<[^>]*>/g, "").replace(/&quot;/g, '"').replace(/&amp;/g, "&");
+      return `${i + 1}. **${r.title}** (${r.wordcount.toLocaleString()} words)\n   ${snippet}\n   https://${lang}.wikipedia.org/wiki/${encodeURIComponent(r.title.replace(/ /g, "_"))}`;
+    }).join("\n\n");
+    return { ok: true, text: `Wikipedia results for "${query}":\n\n${results}` };
+  } catch (err) {
+    return { ok: false, error: `Wikipedia search failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+async function handleGetWikipediaSummary(body: Record<string, unknown>): Promise<ActionResult> {
+  const title = String(body.title ?? "").trim();
+  if (!title) return { ok: false, error: "Missing title" };
+  const lang = String(body.language ?? "en");
+
+  try {
+    const data = await wikiQuery(lang, {
+      action: "query",
+      titles: title,
+      prop: "extracts|info",
+      exintro: "true",
+      explaintext: "true",
+      inprop: "url",
+      redirects: "1",
+    });
+    const pages = (data.query as Record<string, unknown>)?.pages as Record<string, {
+      title: string; extract?: string; fullurl?: string; missing?: string;
+    }>;
+    const page = Object.values(pages ?? {})[0];
+    if (!page || page.missing !== undefined) return { ok: false, error: `Article not found: "${title}"` };
+    if (!page.extract?.trim()) return { ok: true, text: `Article "${page.title}" exists but has no summary text.` };
+
+    return { ok: true, text: `**${page.title}**\n${page.fullurl ?? ""}\n\n${page.extract}` };
+  } catch (err) {
+    return { ok: false, error: `Wikipedia summary failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+async function handleGetWikipediaArticle(body: Record<string, unknown>): Promise<ActionResult> {
+  const title = String(body.title ?? "").trim();
+  if (!title) return { ok: false, error: "Missing title" };
+  const lang = String(body.language ?? "en");
+
+  try {
+    const data = await wikiQuery(lang, {
+      action: "query",
+      titles: title,
+      prop: "extracts|info",
+      explaintext: "true",
+      inprop: "url",
+      redirects: "1",
+    });
+    const pages = (data.query as Record<string, unknown>)?.pages as Record<string, {
+      title: string; extract?: string; fullurl?: string; missing?: string;
+    }>;
+    const page = Object.values(pages ?? {})[0];
+    if (!page || page.missing !== undefined) return { ok: false, error: `Article not found: "${title}"` };
+    if (!page.extract?.trim()) return { ok: true, text: `Article "${page.title}" exists but has no text content.` };
+
+    // Truncate very long articles to avoid token overflow
+    const MAX_LENGTH = 15_000;
+    const text = page.extract.length > MAX_LENGTH
+      ? page.extract.slice(0, MAX_LENGTH) + "\n\n[... truncated — article is too long. Use get_wikipedia_sections to read specific sections.]"
+      : page.extract;
+
+    return { ok: true, text: `**${page.title}**\n${page.fullurl ?? ""}\n\n${text}` };
+  } catch (err) {
+    return { ok: false, error: `Wikipedia article failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+async function handleGetWikipediaSections(body: Record<string, unknown>): Promise<ActionResult> {
+  const title = String(body.title ?? "").trim();
+  const sectionName = String(body.section ?? "").trim();
+  if (!title) return { ok: false, error: "Missing title" };
+  if (!sectionName) return { ok: false, error: "Missing section name" };
+  const lang = String(body.language ?? "en");
+
+  try {
+    // First get the section list
+    const tocData = await wikiQuery(lang, {
+      action: "parse",
+      page: title,
+      prop: "sections",
+      redirects: "1",
+    });
+    const sections = (tocData.parse as Record<string, unknown>)?.sections as Array<{
+      toclevel: number; number: string; line: string; index: string;
+    }> ?? [];
+
+    // Find matching section (case-insensitive)
+    const target = sectionName.toLowerCase();
+    const match = sections.find(s => s.line.toLowerCase() === target);
+    if (!match) {
+      const available = sections.map(s => `  - ${s.line}`).join("\n");
+      return { ok: false, error: `Section "${sectionName}" not found in "${title}".\n\nAvailable sections:\n${available}` };
+    }
+
+    // Get section content
+    const data = await wikiQuery(lang, {
+      action: "parse",
+      page: title,
+      prop: "wikitext",
+      section: match.index,
+      redirects: "1",
+    });
+    const wikitext = (data.parse as Record<string, unknown>)?.wikitext as Record<string, string> | undefined;
+    const raw = wikitext?.["*"] ?? "";
+
+    // Strip basic wikitext markup for readability
+    const cleaned = raw
+      .replace(/\{\{[^}]*\}\}/g, "")          // remove templates
+      .replace(/\[\[(?:[^|\]]*\|)?([^\]]*)\]\]/g, "$1") // [[link|text]] → text
+      .replace(/<ref[^>]*>.*?<\/ref>/gs, "")   // remove references
+      .replace(/<ref[^/]*\/>/g, "")             // self-closing refs
+      .replace(/<\/?[^>]+>/g, "")               // HTML tags
+      .replace(/'{2,3}/g, "")                   // bold/italic markers
+      .replace(/\n{3,}/g, "\n\n")              // collapse blank lines
+      .trim();
+
+    if (!cleaned) return { ok: true, text: `Section "${match.line}" exists but has no readable content.` };
+    return { ok: true, text: `**${title} — ${match.line}**\n\n${cleaned}` };
+  } catch (err) {
+    return { ok: false, error: `Wikipedia sections failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+async function handleGetWikipediaLinks(body: Record<string, unknown>): Promise<ActionResult> {
+  const title = String(body.title ?? "").trim();
+  if (!title) return { ok: false, error: "Missing title" };
+  const limit = Math.min(500, Math.max(1, Number(body.limit ?? 20)));
+  const lang = String(body.language ?? "en");
+
+  try {
+    const data = await wikiQuery(lang, {
+      action: "query",
+      titles: title,
+      prop: "links",
+      pllimit: String(limit),
+      plnamespace: "0", // main namespace only
+      redirects: "1",
+    });
+    const pages = (data.query as Record<string, unknown>)?.pages as Record<string, {
+      title: string; links?: Array<{ title: string }>; missing?: string;
+    }>;
+    const page = Object.values(pages ?? {})[0];
+    if (!page || page.missing !== undefined) return { ok: false, error: `Article not found: "${title}"` };
+    const links = page.links ?? [];
+    if (links.length === 0) return { ok: true, text: `No internal links found in "${page.title}".` };
+
+    const formatted = links.map(l => `- ${l.title}`).join("\n");
+    return { ok: true, text: `Internal links from "${page.title}" (${links.length}):\n\n${formatted}` };
+  } catch (err) {
+    return { ok: false, error: `Wikipedia links failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
 const plugin = {
   name: "extras",
-  description: "Extra utilities — currency conversion, weather, and more",
-  version: "1.3.0",
+  description: "Extra utilities — currency conversion, weather, Wikipedia, and more",
+  version: "1.4.0",
 
   mcpServerPath: resolve(__dirname, "tools.ts"),
 
@@ -141,6 +337,11 @@ const plugin = {
     _chatId: string,
   ): Promise<ActionResult | null> {
     if (body.action === "get_weather") return handleWeather(body);
+    if (body.action === "search_wikipedia") return handleSearchWikipedia(body);
+    if (body.action === "get_wikipedia_summary") return handleGetWikipediaSummary(body);
+    if (body.action === "get_wikipedia_article") return handleGetWikipediaArticle(body);
+    if (body.action === "get_wikipedia_sections") return handleGetWikipediaSections(body);
+    if (body.action === "get_wikipedia_links") return handleGetWikipediaLinks(body);
     if (body.action !== "convert_currency") return null;
 
     const amount = Number(body.amount ?? 1);
@@ -179,7 +380,16 @@ You have access to a convert_currency tool for real-time currency conversion usi
 Supports all major fiat currencies: USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD, SEK, NOK, DKK, PLN, CZK, HUF, RON, BGN, HRK, ISK, TRY, BRL, CNY, HKD, IDR, ILS, INR, KRW, MXN, MYR, PHP, SGD, THB, ZAR.
 
 ## Weather
-You have access to a get_weather tool for current conditions and forecasts. Requires latitude/longitude — geocode city names first using the tool's built-in geocoding.`;
+You have access to a get_weather tool for current conditions and forecasts. Requires latitude/longitude — geocode city names first using the tool's built-in geocoding.
+
+## Wikipedia
+You have access to Wikipedia tools for searching and reading articles:
+- \`search_wikipedia\` — search articles by keyword
+- \`get_wikipedia_summary\` — get a concise intro summary
+- \`get_wikipedia_article\` — get full article text (truncated at 15k chars for long articles)
+- \`get_wikipedia_sections\` — extract a specific section by heading
+- \`get_wikipedia_links\` — list internal links (related topics)
+All tools support a \`language\` parameter for non-English Wikipedias (e.g. "pl", "ja", "de").`;
   },
 } as const;
 
